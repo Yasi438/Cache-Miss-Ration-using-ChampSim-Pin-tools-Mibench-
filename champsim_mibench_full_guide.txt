@@ -1,0 +1,402 @@
+
+ChampSim + MiBench + Pin Full Setup and Workflow (Working Version)
+==================================================================
+
+This is a complete step-by-step checklist that reproduces the working setup we used,
+including fixes for the errors you may hit (vcpkg bzip2 failure, Pin path issues,
+trace output path issues, and MiBench argument problems). I suggest if you are new just work with 
+these commands and when you are comfortable with path and locating where are my files then you can change the path as you like. 
+we use docker container with Linux:latest version. 
+
+Assumptions
+-----------
+- You are running as user 'root' in a Linux container / VM (Ubuntu-like).
+- Your folders:
+    /ChampSim  – ChampSim repo
+    /mibench   – MiBench repo
+    /root/tools/pin-external-3.31-98869-gfa6f126a8-gcc-linux – Intel Pin
+- Your home directory is /root and '~' expands to /root.
+
+If your paths are different, adjust them accordingly.
+
+
+1. Install system packages
+--------------------------
+
+Update apt and install all needed build tools (this also fixes vcpkg's bzip2:x64-linux BUILD_FAILED):
+
+    apt-get update
+    apt-get install -y         build-essential         cmake         ninja-build         pkg-config         curl         zip unzip         git         libelf-dev         libdwarf-dev
+
+These packages give you:
+- A C/C++ compiler and make (build-essential)
+- CMake and Ninja (used by vcpkg / ChampSim)
+- libelf/libdwarf (needed by the Pin-based tracer)
+
+
+2. Clone and set up ChampSim
+----------------------------
+
+2.1. Clone ChampSim into /ChampSim:
+
+    cd /
+    git clone https://github.com/ChampSim/ChampSim.git
+    cd ChampSim
+
+2.2. Initialize vcpkg submodule:
+
+    git submodule update --init
+
+2.3. Bootstrap vcpkg:
+
+    ./vcpkg/bootstrap-vcpkg.sh
+
+2.4. Install ChampSim dependencies with vcpkg:
+
+    ./vcpkg/vcpkg install
+
+If you see an error like:
+
+    error: building bzip2:x64-linux failed with: BUILD_FAILED
+
+make sure step 1 (apt-get install ...) has been done, then retry:
+
+    ./vcpkg/vcpkg install
+
+Once it completes without errors, move on.
+
+
+3. Build the ChampSim simulator binary
+--------------------------------------
+Note: 
+make sure you have python3 installed to run the config 
+if not 
+sudo apt-get install paython3
+
+3.1. Configure using the default config file: here you can change the default configuration as your choice
+     we only needed to change the prefetcher ON/OFF, you can the configuration based on your requirment 
+
+    cd /ChampSim
+    ./config.sh champsim_config.json
+
+3.2. Build:
+
+    make -j
+
+This should produce:
+
+    /ChampSim/bin/champsim
+
+Check:
+
+    ls /ChampSim/bin/champsim
+
+If the binary is missing later (e.g., after a container reset), just rerun:
+
+    cd /ChampSim
+    ./config.sh champsim_config.json
+    make -j
+
+
+4. Install Intel Pin 3.31
+-------------------------
+
+4.1. Download Pin 3.31 for Linux from Intel's site:
+
+From a browser, download the kit whose filename looks like:
+
+    pin-external-3.31-98869-gfa6f126a8-gcc-linux.tar.gz
+
+4.2. Place the tarball in /root/tools (or where ever you prefere)  and extract:
+
+    mkdir -p /root/tools
+    cd /root/tools
+    tar -xzf pin-external-3.31-98869-gfa6f126a8-gcc-linux.tar.gz
+
+You should now have:
+
+    /root/tools/pin-external-3.31-98869-gfa6f126a8-gcc-linux
+
+4.3. Set PIN_ROOT (for current shell):
+
+    export PIN_ROOT="/root/tools/pin-external-3.31-98869-gfa6f126a8-gcc-linux"
+
+Verify:
+
+    echo $PIN_ROOT
+    $PIN_ROOT/pin -version
+
+You should see a Pin 3.31 banner. If so, Pin is ready.
+
+(Optional) Add this line to ~/.bashrc so it's set automatically:
+
+    echo 'export PIN_ROOT="/root/tools/pin-external-3.31-98869-gfa6f126a8-gcc-linux"' >> ~/.bashrc
+
+
+5. Build the ChampSim Pin tracer (champsim_tracer.so)
+-----------------------------------------------------
+
+The tracer lives in /ChampSim/tracer/pin.
+
+5.1. Go to the tracer directory:
+
+    cd /ChampSim/tracer/pin
+
+5.2. Build using Pin:
+
+    make PIN_ROOT="$PIN_ROOT"
+
+On success you will have:
+
+    /ChampSim/tracer/pin/obj-intel64/champsim_tracer.so
+
+Check:
+
+    ls obj-intel64/champsim_tracer.so
+
+
+6. Get MiBench and build benchmarks
+-----------------------------------
+
+6.1. Clone MiBench into /mibench:
+
+    cd /
+    git clone https://github.com/embecosm/mibench.git mibench
+    cd /mibench
+
+MiBench subdirectories include automotive, network, consumer, office, etc.
+
+We’ll explicitly build two benchmarks that we know work here you can choose whatever benchmarks you like 
+, just be mindful of the size of the benchmark and your machine space:
+
+- automotive/basicmath
+- network/dijkstra
+
+You can later repeat the same pattern for more benchmarks.
+
+6.2. Build automotive/basicmath:
+
+    cd /mibench/automotive/basicmath
+    make
+
+Run a quick test:
+
+    ./basicmath_small
+
+It should print a long list of numeric output (e.g., radians/degrees). If it runs, it's fine.
+
+6.3. Build network/dijkstra:
+
+    cd /mibench/network/dijkstra
+    make
+
+Check the files:
+
+    ls -l
+
+You should see binaries:
+
+    dijkstra_small   (≈31 KB)
+    dijkstra_large   (≈900 KB)
+    input.dat
+
+Important: dijkstra_small REQUIRES an input filename, or it will segfault.
+
+Run the correct test:
+
+    ./dijkstra_small input.dat
+
+This should NOT segfault and should print some numeric results. If you run:
+
+    ./dijkstra_small          # (no argument)
+you'll get a usage message and SEGFAULT – this is expected and should be avoided.
+
+
+7. Create a directory for traces
+--------------------------------
+
+We will store all ChampSim traces in your home directory:
+
+    mkdir -p ~/champsim_traces_mibench
+
+For root, this is:
+
+    /root/champsim_traces_mibench
+
+
+8. Generate traces with Pin + champsim_tracer.so
+------------------------------------------------
+
+Critical rules that avoid the errors:
+
+- You MUST run Pin from the directory that contains obj-intel64/champsim_tracer.so which we have in below path:
+    /ChampSim/tracer/pin
+- The output directory given in -o must EXIST and be writable:
+    ~/champsim_traces_mibench  (NOT /champsim_traces_mibench)
+- Use full, correct paths to the MiBench binaries and inputs.
+- Pass required arguments (e.g., input.dat for dijkstra_small).
+
+8.1. Trace automotive/basicmath (100M instructions example): 
+
+    cd /ChampSim/tracer/pin
+
+    $PIN_ROOT/pin -t obj-intel64/champsim_tracer.so       -o ~/champsim_traces_mibench/basicmath_100M.champsim       -s 0       -t 100000000       -- /mibench/automotive/basicmath/basicmath_small
+
+for big ones:
+	
+
+    $PIN_ROOT/pin -t obj-intel64/champsim_tracer.so       -o ~/champsim_traces_mibench/basicmath_larger_100M.champsim       -s 0       -t 1000000000       -- /mibench/automotive/basicmath/basicmath_large
+
+Explanation: these are your choice, they depend based on your requirments. 
+- -t 100000000  → trace 100M instructions
+- -s 0          → don't skip any instructions
+- Output trace is written to /root/champsim_traces_mibench/basicmath_100M.champsim
+
+8.2. Trace network/dijkstra (100M instructions example)
+
+    cd /ChampSim/tracer/pin
+
+    $PIN_ROOT/pin -t obj-intel64/champsim_tracer.so       -o ~/champsim_traces_mibench/dijkstra_100M.champsim       -s 0       -t 100,000,000       -- /mibench/network/dijkstra/dijkstra_small /mibench/network/dijkstra/input.dat
+
+for big ones:
+ $PIN_ROOT/pin -t obj-intel64/champsim_tracer.so       -o ~/champsim_traces_mibench/dijkstra_large_1b.champsim       -s 0       -t 1,000,000,000       -- /mibench/network/dijkstra/dijkstra_large /mibench/network/dijkstra/input.dat
+
+Note:
+- The command after -- is exactly how you tested the program:
+    ./dijkstra_small input.dat
+  but with full paths.
+
+
+9. Compress the traces if you want to save for future , again be mindfull of the space you have and size of the traces 
+----------------------
+
+ChampSim expects traces in .champsim or .champsim.xz.
+
+    cd ~/champsim_traces_mibench
+
+    xz -T0 basicmath_100M.champsim
+    xz -T0 dijkstra_100M.champsim
+
+Now you have:
+
+    basicmath_100M.champsim.xz
+    dijkstra_100M.champsim.xz
+
+
+10. Run ChampSim on the MiBench traces
+--------------------------------------
+
+10.1. Verify that bin/champsim exists. If not, rebuild (see section 3).
+
+    cd /ChampSim
+    ls bin/champsim
+
+10.2. Run ChampSim on basicmath trace: the warmup-instructions and simulation-instructios are your choice, you can adjust as per your requirement and choice 
+
+    cd /ChampSim
+
+    bin/champsim       --warmup-instructions 20000000       --simulation-instructions 80000000       ~/champsim_traces_mibench/basicmath_100M.champsim.xz
+
+big one:
+bin/champsim       --warmup-instructions 20000000       --simulation-instructions 1000000000       ~/champsim_traces_mibench/basicmath_larger_100M.champsim.xz
+
+10.3. Run ChampSim on dijkstra trace:
+
+    bin/champsim       --warmup-instructions 20000000       --simulation-instructions 80000000       ~/champsim_traces_mibench/dijkstra_100M.champsim.xz
+    bin/champsim       --warmup-instructions 200000000       --simulation-instructions 800000000       ~/champsim_traces_mibench/dijkstra_large_1b.champsim.xz
+
+For each run you’ll see:
+- Heartbeat messages
+- "Simulation finished" summary with IPC
+- Detailed "Region of Interest Statistics"
+- Cache statistics (L1I, L1D, L2C, LLC, TLBs, DRAM)
+
+
+11. Reading cache miss ratios from ChampSim output
+--------------------------------------------------
+
+From the end of each run, find lines like:
+
+    cpu0->cpu0_L1D TOTAL        ACCESS:   22734482 HIT:   22731603 MISS:       2879
+    cpu0->cpu0_L1I TOTAL        ACCESS:   11759919 HIT:   11758599 MISS:       1320
+    cpu0->cpu0_L2C TOTAL        ACCESS:       2630 HIT:       2479 MISS:        151
+    cpu0->LLC      TOTAL        ACCESS:        151 HIT:          0 MISS:        151
+
+Compute miss ratio as:
+
+    miss_ratio = MISS / ACCESS
+
+Example for L1D above:
+
+    miss_ratio_L1D = 2879 / 22734482 ≈ 0.0001266 ≈ 0.0127%
+
+You can compute these by hand or with a small Python/R/Excel script later.
+These miss ratios (for L1I, L1D, L2C, LLC) are what we need for your project 
+to compare benchmarks, cache configurations, and prefetch on/off.
+
+
+12. Adding more MiBench benchmarks (general pattern)
+----------------------------------------------------
+
+For any additional MiBench benchmark:
+
+1. Build and test it:
+
+       cd /mibench/<category>/<benchmark>
+       make
+       # then run it once with the correct arguments, e.g.:
+       ./program [args...]
+
+2. Trace it with Pin from /ChampSim/tracer/pin:
+
+       cd /ChampSim/tracer/pin
+       $PIN_ROOT/pin -t obj-intel64/champsim_tracer.so          -o ~/champsim_traces_mibench/<name>_100M.champsim          -s 0 -t 100000000          -- /mibench/<category>/<benchmark>/<binary> [args...]
+
+3. Compress:
+
+       cd ~/champsim_traces_mibench
+       xz -T0 <name>_100M.champsim
+
+4. Simulate:
+
+       cd /ChampSim
+       bin/champsim          --warmup-instructions 20000000          --simulation-instructions 80000000          ~/champsim_traces_mibench/<name>_100M.champsim.xz
+
+As long as you respect:
+- Correct working directory for Pin (/ChampSim/tracer/pin)
+- Existing/writable output directory (~/champsim_traces_mibench)
+- Correct binary + arguments for each benchmark
+you will avoid the errors you encountered earlier.
+
+
+Quick Troubleshooting Summary
+-----------------------------
+
+1. vcpkg error "building bzip2:x64-linux failed":
+   - Make sure apt packages from section 1 are installed.
+   - Re-run: ./vcpkg/vcpkg install
+
+2. Pin error "Unable to resolve tool path obj-intel64/champsim_tracer.so":
+   - You are NOT in /ChampSim/tracer/pin.
+   - cd /ChampSim/tracer/pin, then run the Pin command again.
+
+3. Pin error "Couldn't open output trace file":
+   - The directory in -o does NOT exist or is unwritable.
+   - Use: -o ~/champsim_traces_mibench/... and make sure it exists.
+
+4. MiBench dijkstra segfault:
+   - You ran ./dijkstra_small with no argument.
+   - Correct is: ./dijkstra_small input.dat
+   - Use the same arguments in the Pin command.
+
+With these steps, you can reliably go from a clean container to:
+- Built ChampSim
+- Built Pin tracer
+- Built MiBench benchmarks
+- Generated traces
+- Collected cache statistics for your project.
+
+
+Note: we create a python script to run all the benchmarks traces you generated using pin tools and mibench 
+       with running that pyhton script it will take care of all the steps from 10 after, and create a CSV file 
+       from the results which is much more understandable. Later you can use that CSV file to make comparison and generate other visualizations 
